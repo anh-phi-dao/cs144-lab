@@ -269,7 +269,7 @@ void ctcp_destroy(ctcp_state_t *state)
 
   clean_all_object_int_linked_list(state->receive_segments);
   ll_destroy(state->receive_segments);
-  state->segments = NULL;
+  state->receive_segments = NULL;
 
   clean_all_object_int_linked_list(state->timer);
   ll_destroy(state->timer);
@@ -311,22 +311,30 @@ void send_FIN(ctcp_state_t *state)
 void update_send_base(ctcp_state_t *state)
 {
   ll_node_t *track = state->segments->head;
+
   while (track != NULL)
   {
     ctcp_segment_t *seg = (ctcp_segment_t *)track->object;
-    state->send_base = seg->seqno + seg->len - sizeof(ctcp_segment_t);
-#ifdef DEBUG_UPDATE_SEND_BASE
-    fprintf(stderr, "[INFO] state->send_base=%d\n", state->send_base);
-    fprintf(stderr, "[INFO] seg->seqno=%d and seq->ackno=%d\n", seg->seqno, seg->ackno);
-#endif
-    if (seg->ackno != 1)
+
+    if (seg->seqno == state->send_base)
     {
-      track = track->next;
+      /*when meet an acked segment*/
+      if (seg->ackno == seg->seqno + seg->len - sizeof(ctcp_segment_t))
+      {
+        delete_timer(state, seg->seqno);
+        state->send_base = seg->seqno + seg->len - sizeof(ctcp_segment_t);
+        ll_node_t *temp = track;
+        track = track->next;
+        ll_remove(state->segments, temp);
+        free(temp->object);
+        continue;
+      }
+      else
+      {
+        break;
+      }
     }
-    else
-    {
-      break;
-    }
+    track = track->next;
   }
 }
 
@@ -385,6 +393,7 @@ void delete_timer(ctcp_state_t *state, uint32_t seqno)
       ll_remove(state->timer, track);
       return;
     }
+    track = track->next;
   }
 }
 
@@ -429,26 +438,8 @@ void retransmit_segments(ctcp_state_t *state)
         fprintf(stderr, "[INFO] Sender retransmit");
         print_hdr_ctcp(sent_seg);
 #endif
-        conn_send(state_list->conn, sent_seg, seg->len);
+        conn_send(state->conn, sent_seg, seg->len);
         sent_seg = free_ctcp_segment_t(sent_seg);
-      }
-      else
-      {
-        if (track->next != NULL)
-        {
-          ll_node_t *temp = track;
-          delete_timer(state, ((ctcp_segment_timer_t *)temp->object)->seqno);
-          track = track->next;
-          free(temp->object);
-          ll_remove(state->segments, temp);
-        }
-        else
-        {
-          delete_timer(state, ((ctcp_segment_timer_t *)track->object)->seqno);
-          free(track->object);
-          ll_remove(state->segments, track);
-          break;
-        }
       }
     }
     track = track->next;
@@ -481,6 +472,15 @@ void add_to_buffer_with_order(linked_list_t *buff, ctcp_segment_t *segment)
   }
   track = track->prev;
   ll_add_after(buff, track, segment);
+}
+
+int is_corrupt(ctcp_segment_t *segment)
+{
+  uint16_t segment_cksum = segment->cksum;
+  segment->cksum = 0;
+  int result = cksum(segment, ntohs(segment->len)) != segment_cksum;
+  segment->cksum = segment_cksum;
+  return result;
 }
 
 void ctcp_read(ctcp_state_t *state)
@@ -548,15 +548,18 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 #endif
   if (len < sizeof(ctcp_segment_t))
   {
+    goto escape;
     return;
   }
   if (len < segment->len)
   {
+    goto escape;
     return;
   }
   uint16_t checksum = cksum(segment, segment->len);
   if (checksum != 0xffff)
   {
+    goto escape;
     return;
   }
   /*Receive FIN, output any remain segment, destroy connection*/
@@ -573,10 +576,10 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
     if (state->FIN_Close != DID_NOT_FIND_SEGMENT_IN_BUFFER)
     {
       state->FIN_Close++;
-      return;
+      goto escape;
     }
     /*on sender side when receiving acknowledgement*/
-    if (strlen(segment->data) == 0)
+    if (segment->len == sizeof(ctcp_segment_t))
     {
       if (segment->ackno <= (state->send_base + state->cfg->send_window))
       {
@@ -597,11 +600,7 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
             /*this will make the segment become acknowledged*/
             /*A segment is acknowledged if its ackno!=1*/
             sender_buff_segment->ackno = segment->ackno;
-
-            if (sender_buff_segment->seqno == state->send_base)
-            {
-              update_send_base(state);
-            }
+            update_send_base(state);
             break;
           }
           track = track->next;
@@ -630,9 +629,11 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
       }
     }
   }
+escape:
 #ifdef PRINT_FINAL_STATE
   print_state_number(state);
 #endif
+  free(segment);
 }
 
 void ctcp_output(ctcp_state_t *state)

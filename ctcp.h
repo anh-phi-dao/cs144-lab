@@ -25,7 +25,7 @@
 #define DEBUG_UPDATE_SEND_BASE
 #define DEBUG_FIN_SIGNAL
 // #define DEBUF_SEGMENT_LEN
-// #define DEBUG_RETRANSMISSION
+#define DEBUG_RETRANSMISSION
 #endif
 
 struct ctcp_segment_timer;
@@ -199,5 +199,8 @@ void ctcp_output(ctcp_state_t *state);
  * Note that this is called BEFORE ctcp_init() so state_list might be NULL.
  */
 void ctcp_timer();
+
+ctcp_segment_timer_t *find_timer(ctcp_state_t *state, uint32_t seqno);
+void delete_timer(ctcp_state_t *state, uint32_t seqno);
 
 #endif /* CTCP_H */
