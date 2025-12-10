@@ -16,6 +16,8 @@
 #include "ctcp_sys.h"
 #include "ctcp_utils.h"
 
+#define MAX_SEG_IN_WINDOW MAX_WINDOW *MAX_SEG_DATA_SIZE
+
 #define ENABLE_ACK_BIT 1
 #define DISABLE_ACK_BIT 0
 #define MAX_ATTEMP_RETRANSMISSION 5
@@ -66,9 +68,10 @@ struct ctcp_state
                               this if this is the case for you */
 
   /* FIXME: Add other needed fields. */
-  linked_list_t *timer;            /*store the timer value*/
+  // linked_list_t *timer;            /*store the timer value*/
   linked_list_t *receive_segments; /*Linked list of received segments*/
-  ctcp_config_t *cfg;              /*connection configuration (RT timeout,transmission time,receive window, send window)*/
+  linked_list_t *timer;
+  ctcp_config_t *cfg; /*connection configuration (RT timeout,transmission time,receive window, send window)*/
   uint32_t nextseqno;
   uint32_t send_base;
   uint32_t receive_base;
@@ -115,13 +118,14 @@ ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg)
   state->send_base = 1;
   state->receive_base = 1;
 
-  cfg->recv_window = MAX_SEG_DATA_SIZE;
-  cfg->send_window = MAX_SEG_DATA_SIZE;
+  cfg->recv_window = MAX_SEG_IN_WINDOW;
+  cfg->send_window = MAX_SEG_IN_WINDOW;
 
   cfg->rt_timeout = 500;
-  cfg->timer = 1000;
+  cfg->timer = 3000;
 
-  state->cfg = cfg;
+  state->cfg = malloc(sizeof(ctcp_config_t));
+  memcpy(state->cfg, cfg, sizeof(ctcp_config_t));
   state->num_of_received_failed_ack = 0;
   state->num_of_retransmission = 0;
   return state;
@@ -187,7 +191,7 @@ ctcp_segment_t *create_segment(ctcp_state_t *state, ctcp_segment_t *current_segm
     tcp_segment->seqno = state->nextseqno;
   }
   tcp_segment->len = len_for_segment;
-  tcp_segment->window = state->cfg->send_window;
+  tcp_segment->window = MAX_SEG_DATA_SIZE;
   tcp_segment->flags = 0;
   if (with_ACK == ENABLE_ACK_BIT)
   {
@@ -212,7 +216,7 @@ ctcp_segment_t *create_FIN(ctcp_state_t *state)
   tcp_segment->flags = 0;
   tcp_segment->flags |= FIN;
   tcp_segment->len = sizeof(ctcp_segment_t);
-  tcp_segment->window = state->cfg->send_window;
+  tcp_segment->window = MAX_SEG_DATA_SIZE;
   tcp_segment->ackno = 1;
   tcp_segment->seqno = state->nextseqno;
   tcp_segment->cksum = 0;
@@ -267,6 +271,13 @@ void ctcp_destroy(ctcp_state_t *state)
   ll_destroy(state->receive_segments);
   state->segments = NULL;
 
+  clean_all_object_int_linked_list(state->timer);
+  ll_destroy(state->timer);
+  state->timer = NULL;
+
+  free(state->cfg);
+  state->cfg = NULL;
+
   free(state);
   end_client();
 }
@@ -294,7 +305,7 @@ void send_FIN(ctcp_state_t *state)
 #ifdef PRINT_FINAL_STATE
   print_state_number(state);
 #endif
-  state->FIN_Close = FIN_SENT_OR_RECEIVED;
+  state->FIN_Close++;
 }
 
 void update_send_base(ctcp_state_t *state)
@@ -303,13 +314,17 @@ void update_send_base(ctcp_state_t *state)
   while (track != NULL)
   {
     ctcp_segment_t *seg = (ctcp_segment_t *)track->object;
-    if (seg->seqno == seg->ackno)
+    state->send_base = seg->seqno + seg->len - sizeof(ctcp_segment_t);
+#ifdef DEBUG_UPDATE_SEND_BASE
+    fprintf(stderr, "[INFO] state->send_base=%d\n", state->send_base);
+    fprintf(stderr, "[INFO] seg->seqno=%d and seq->ackno=%d\n", seg->seqno, seg->ackno);
+#endif
+    if (seg->ackno != 1)
     {
       track = track->next;
     }
     else
     {
-      state->send_base = seg->seqno;
       break;
     }
   }
@@ -321,6 +336,10 @@ void send_acknowledgement_of_received_packet(ctcp_state_t *state, ctcp_segment_t
   uint16_t len = sent_seg->len;
   segment_host_to_network(sent_seg);
   conn_send(state->conn, sent_seg, len);
+#ifdef DEBUG_SEGMENT
+  fprintf(stderr, "[INFO] Receiver send acknowledgement");
+  print_hdr_ctcp(sent_seg);
+#endif
   sent_seg = free_ctcp_segment_t(sent_seg);
 }
 
@@ -339,61 +358,100 @@ uint32_t find_segment_in_buffer(linked_list_t *buff, ctcp_segment_t *segment)
   return DID_NOT_FIND_SEGMENT_IN_BUFFER;
 }
 
+ctcp_segment_timer_t *find_timer(ctcp_state_t *state, uint32_t seqno)
+{
+  ll_node_t *track = state->timer->head;
+  while (track != NULL)
+  {
+    ctcp_segment_timer_t *timer = (ctcp_segment_timer_t *)track->object;
+    if (timer->seqno == seqno)
+    {
+      return timer;
+    }
+    track = track->next;
+  }
+  return NULL;
+}
+
+void delete_timer(ctcp_state_t *state, uint32_t seqno)
+{
+  ll_node_t *track = state->timer->head;
+  while (track != NULL)
+  {
+    ctcp_segment_timer_t *timer = (ctcp_segment_timer_t *)track->object;
+    if (timer->seqno == seqno)
+    {
+      free(track->object);
+      ll_remove(state->timer, track);
+      return;
+    }
+  }
+}
+
 void retransmit_segments(ctcp_state_t *state)
 {
   ll_node_t *track = state->segments->head;
-  ll_node_t *track_time = state->timer->head;
   uint8_t require_transmit = NO_SEGMENT_NEED_TO_BE_RETRANSMITTED;
-  while (track != NULL && track_time != NULL)
+  while (track != NULL)
   {
     ctcp_segment_t *seg = (ctcp_segment_t *)track->object;
-    ctcp_segment_timer_t *seg_time = (ctcp_segment_timer_t *)track_time->object;
-    if (seg->seqno != seg->ackno)
+    if (seg->ackno == 1)
     {
-      long delta_time = current_time() - seg_time->current_time;
-      if (delta_time >= state->cfg->rt_timeout)
+      ctcp_segment_timer_t *time = find_timer(state, seg->seqno);
+      if (time == NULL)
       {
-        require_transmit = THERE_ARE_SEGMENT_REQUIRE_RETRANSMISSION;
-        seg_time->current_time = current_time();
-        memset(buff, 0, sizeof(buff));
-        uint32_t new_seqno = seg->seqno + (seg->len - sizeof(ctcp_segment_t));
-        if (seg->seqno >= state->send_base && new_seqno <= (state->send_base + state->cfg->recv_window))
-        {
-          ctcp_segment_t *sent_seg = malloc(seg->len);
-          segment_host_to_network(sent_seg);
-#ifdef DEBUG_SEGMENT
-          fprintf(stderr, "[INFO] Sender retransmit");
-          print_hdr_ctcp(sent_seg);
+#ifdef DEBUG_RETRANSMISSION
+        fprintf(stderr, "Can not find timer for unacknowledge segment with seqno %d\n", seg->seqno);
 #endif
-          conn_send(state_list->conn, sent_seg, seg->len);
-          sent_seg = free_ctcp_segment_t(sent_seg);
-        }
+        track = track->next;
+        continue;
+      }
+      long delta_time = current_time() - time->current_time;
+      if (delta_time < state->cfg->rt_timeout)
+      {
+#ifdef DEBUG_RETRANSMISSION
+        fprintf(stderr, "Can not find timer for unacknowledge segment with seqno %d\n", seg->seqno);
+#endif
+        track = track->next;
+        continue;
+      }
+      require_transmit = THERE_ARE_SEGMENT_REQUIRE_RETRANSMISSION;
+      time->current_time = current_time();
+      memset(buff, 0, sizeof(buff));
+      uint32_t new_seqno = seg->seqno + (seg->len - sizeof(ctcp_segment_t));
+      if (seg->seqno >= state->send_base && new_seqno <= (state->send_base + state->cfg->recv_window))
+      {
+        ctcp_segment_t *sent_seg = malloc(seg->len);
+        memset(sent_seg, 0, seg->len);
+        memcpy(sent_seg, seg, seg->len);
+        segment_host_to_network(sent_seg);
+#ifdef DEBUG_SEGMENT
+        fprintf(stderr, "[INFO] Sender retransmit");
+        print_hdr_ctcp(sent_seg);
+#endif
+        conn_send(state_list->conn, sent_seg, seg->len);
+        sent_seg = free_ctcp_segment_t(sent_seg);
       }
       else
       {
         if (track->next != NULL)
         {
           ll_node_t *temp = track;
+          delete_timer(state, ((ctcp_segment_timer_t *)temp->object)->seqno);
           track = track->next;
           free(temp->object);
           ll_remove(state->segments, temp);
-          temp = track_time;
-          track_time = track_time->next;
-          free(temp->object);
-          ll_remove(state->timer, temp);
         }
         else
         {
+          delete_timer(state, ((ctcp_segment_timer_t *)track->object)->seqno);
           free(track->object);
           ll_remove(state->segments, track);
-          free(track_time->object);
-          ll_remove(state->timer, track_time);
           break;
         }
       }
     }
     track = track->next;
-    track_time = track_time->next;
   }
   if (require_transmit == THERE_ARE_SEGMENT_REQUIRE_RETRANSMISSION)
   {
@@ -401,65 +459,98 @@ void retransmit_segments(ctcp_state_t *state)
   }
 }
 
+void add_to_buffer_with_order(linked_list_t *buff, ctcp_segment_t *segment)
+{
+  ll_node_t *track = buff->head;
+  if (track == NULL)
+  {
+    ll_add(buff, segment);
+    return;
+  }
+  while (track != NULL)
+  {
+    ctcp_segment_t *buffered_segment = (ctcp_segment_t *)track->object;
+    if (segment->seqno > buffered_segment->seqno)
+    {
+      track = track->next;
+    }
+    else
+    {
+      break;
+    }
+  }
+  track = track->prev;
+  ll_add_after(buff, track, segment);
+}
+
 void ctcp_read(ctcp_state_t *state)
 {
   /* FIXME */
-  memset(buff, 0, sizeof(buff));
+
   int read_bytes = 0;
-  /*read from associated standard input*/
-  read_bytes = conn_input(state->conn, buff, MAX_SEG_DATA_SIZE);
-  /*If there are available data, send to receiver and stostate->cur_seqno re in buffer*/
-  if (read_bytes > 0)
+  do
   {
-    /*send to tcp*/
-    ctcp_segment_t *sent_segment = create_segment(state, NULL, buff, read_bytes, ENABLE_ACK_BIT);
-    ctcp_segment_timer_t *sent_segment_time = create_timer_for_segment(sent_segment);
-    /*store to buffer*/
-    uint32_t new_seqno = sent_segment->seqno + sent_segment->len - sizeof(ctcp_segment_t);
-    ll_add(state->segments, sent_segment);
-    ll_add(state->timer, sent_segment_time);
-    /*check sender window size*/
-    if (sent_segment->seqno >= state->send_base && new_seqno <= (state->send_base + state->cfg->recv_window))
+    memset(buff, 0, sizeof(buff));
+    /*read from associated standard input*/
+    read_bytes = conn_input(state->conn, buff, MAX_SEG_DATA_SIZE / 2);
+    /*If there are available data, send to receiver and stostate->cur_seqno re in buffer*/
+    if (read_bytes > 0)
     {
-      uint16_t seg_len = sent_segment->len;
-      /*update for later use of retransmission*/
-      ctcp_segment_t *sent_seg = malloc(sent_segment->len);
-      memcpy(sent_seg, sent_segment, sent_segment->len);
-      segment_host_to_network(sent_seg);
+      /*send to tcp*/
+      ctcp_segment_t *sent_segment = create_segment(state, NULL, buff, read_bytes, ENABLE_ACK_BIT);
+      ctcp_segment_timer_t *sent_seg_timer = create_timer_for_segment(sent_segment);
+      /*store to buffer*/
+      uint32_t new_seqno = sent_segment->seqno + sent_segment->len - sizeof(ctcp_segment_t);
+      ll_add(state->segments, sent_segment);
+      ll_add(state->timer, sent_seg_timer);
+      /*check sender window size*/
+      if (sent_segment->seqno >= state->send_base && new_seqno <= (state->send_base + state->cfg->recv_window))
+      {
+        uint16_t seg_len = sent_segment->len;
+        /*update for later use of retransmission*/
+        ctcp_segment_t *sent_seg = malloc(sent_segment->len);
+        memcpy(sent_seg, sent_segment, sent_segment->len);
+        segment_host_to_network(sent_seg);
 #ifdef DEBUG_SEGMENT
-      fprintf(stderr, "[INFO] Sender");
-      print_hdr_ctcp(sent_seg);
+        fprintf(stderr, "[INFO] Sender");
+        print_hdr_ctcp(sent_seg);
 #endif
-      conn_send(state->conn, sent_seg, seg_len);
-      sent_seg = free_ctcp_segment_t(sent_seg);
-      state->nextseqno = new_seqno;
+        conn_send(state->conn, sent_seg, seg_len);
+        sent_seg = free_ctcp_segment_t(sent_seg);
+        state->nextseqno = new_seqno;
+      }
     }
-  }
-  /*When it detect an EOF, send a FIN and destroy connection*/
-  else if (read_bytes < 0)
-  {
-    if (state != NULL)
+    /*When it detect an EOF, send a FIN and destroy connection*/
+    else if (read_bytes < 0)
     {
-      /*send a FIN*/
-      send_FIN(state);
+      if (state != NULL)
+      {
+        /*send a FIN*/
+        send_FIN(state);
+      }
     }
-  }
+  } while (read_bytes > 0);
 }
 
 void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 {
 /* FIXME */
-#ifdef DEBUG_SEGMENT
+#ifdef DEBUG_RECEIVE
   fprintf(stderr, "[INFO] Receiver");
+#endif
+#ifdef DEBUG_SEGMENT
+
   print_hdr_ctcp(segment);
 #endif
   segment_network_to_host(segment);
+#ifdef DEBUF_SEGMENT_LEN
   fprintf(stderr, "[INFO] Len = %lu and segment->len = %d\n", len, segment->len);
+#endif
   if (len < sizeof(ctcp_segment_t))
   {
     return;
   }
-  if (len != segment->len)
+  if (len < segment->len)
   {
     return;
   }
@@ -471,49 +562,66 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
   /*Receive FIN, output any remain segment, destroy connection*/
   if ((segment->flags & FIN) != 0)
   {
-    fprintf(stderr, "[INFO] Connection has been destroyed due to FIN signal\n");
-    memset(buff, 0, sizeof(buff));
-    conn_output(state->conn, buff, 0);
-#ifdef PRINT_FINAL_STATE
-    print_state_number(state);
-#endif
-    send_FIN(state);
+    send_acknowledgement_of_received_packet(state, segment);
+    if (state->FIN_Close == DID_NOT_FIND_SEGMENT_IN_BUFFER)
+    {
+      send_FIN(state);
+    }
   }
   else if ((segment->flags & ACK) != 0)
   {
+    if (state->FIN_Close != DID_NOT_FIND_SEGMENT_IN_BUFFER)
+    {
+      state->FIN_Close++;
+      return;
+    }
     /*on sender side when receiving acknowledgement*/
     if (strlen(segment->data) == 0)
     {
-      ll_node_t *track = state->segments->head;
-      while (track != NULL)
+      if (segment->ackno <= (state->send_base + state->cfg->send_window))
       {
-        ctcp_segment_t *sender_buff_segment = (ctcp_segment_t *)track->object;
-        if (segment->ackno == sender_buff_segment->seqno)
+        ll_node_t *track = state->segments->head;
+        while (track != NULL)
         {
-          /*this will make the segment become acknowledged, seqno=ackno*/
-          sender_buff_segment->ackno = segment->ackno;
-          break;
+
+          ctcp_segment_t *sender_buff_segment = (ctcp_segment_t *)track->object;
+          uint32_t expected_ackno = sender_buff_segment->seqno + sender_buff_segment->len - sizeof(ctcp_segment_t);
+          if (expected_ackno == segment->ackno)
+          {
+
+#ifdef DEBUG_INCOMING_ACKNOWLEDGEMENT
+            fprintf(stderr, "[INFO] Found segment in buffer that corresponding to ack\n");
+            fprintf(stderr, "[INFO] segment->ackno=%d buffed_seqno=%d expected_ackno=%d\n", segment->ackno, sender_buff_segment->seqno, expected_ackno);
+            fprintf(stderr, "[INFO] state->sendbase=%d\n", state->send_base);
+#endif
+            /*this will make the segment become acknowledged*/
+            /*A segment is acknowledged if its ackno!=1*/
+            sender_buff_segment->ackno = segment->ackno;
+
+            if (sender_buff_segment->seqno == state->send_base)
+            {
+              update_send_base(state);
+            }
+            break;
+          }
+          track = track->next;
         }
-        track = track->next;
-      }
-      /*update send base*/
-      if (segment->ackno == state->send_base)
-      {
-        update_send_base(state);
       }
     }
     else
     {
       uint32_t next_seqno = segment->seqno + segment->len - sizeof(ctcp_segment_t);
+      send_acknowledgement_of_received_packet(state, segment);
       if (segment->seqno >= state->receive_base && next_seqno <= (state->receive_base + state->cfg->send_window))
       {
-        send_acknowledgement_of_received_packet(state, segment);
+
         if (find_segment_in_buffer(state->receive_segments, segment) == DID_NOT_FIND_SEGMENT_IN_BUFFER)
         {
-          ctcp_segment_t *recv_seg = malloc(segment->len);
-          memset(recv_seg, 0, segment->len);
-          memcpy(recv_seg, segment, segment->len);
-          ll_add(state->receive_segments, recv_seg);
+          /*must add follow order*/
+          ctcp_segment_t *segment_should_be_buff = malloc(segment->len);
+          memset(segment_should_be_buff, 0, segment->len);
+          memcpy(segment_should_be_buff, segment, segment->len);
+          add_to_buffer_with_order(state->receive_segments, segment_should_be_buff);
         }
         if (segment->seqno == state->receive_base)
         {
@@ -522,6 +630,9 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
       }
     }
   }
+#ifdef PRINT_FINAL_STATE
+  print_state_number(state);
+#endif
 }
 
 void ctcp_output(ctcp_state_t *state)
@@ -575,13 +686,19 @@ void ctcp_timer()
   /*Destroy the connection state*/
   if (state_list->num_of_retransmission >= 10)
   {
+#ifdef DEBUG_RETRANSMISSION
     fprintf(stderr, "[ERROR] Too many retransmission, destroying the connection\n");
-    state_list->FIN_Close = FIN_SENT_OR_RECEIVED;
+#endif
+    ctcp_destroy(state_list);
     return;
   }
   /*when host send or recieve a FIN, destroy the connection*/
-  if (state_list->FIN_Close == FIN_SENT_OR_RECEIVED)
+  if (state_list->FIN_Close >= 2)
   {
+#ifdef DEBUG_FIN_SIGNAL
+    fprintf(stderr, "[INFO] Connection has been destroyed due to FIN signal\n");
+#endif
+    sleep(1);
     ctcp_destroy(state_list);
     return;
   }

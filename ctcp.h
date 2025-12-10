@@ -13,6 +13,20 @@
 #include "ctcp_sys.h"
 #include <stdarg.h>
 #include "ctcp_utils.h"
+#include <unistd.h>
+
+#define DEBUG_CTCP 1
+
+#if DEBUG_CTCP == 1
+// #define DEBUG_SEGMENT
+// #define DEBUG_RECEIVE
+#define PRINT_FINAL_STATE
+#define DEBUG_INCOMING_ACKNOWLEDGEMENT
+#define DEBUG_UPDATE_SEND_BASE
+#define DEBUG_FIN_SIGNAL
+// #define DEBUF_SEGMENT_LEN
+// #define DEBUG_RETRANSMISSION
+#endif
 
 struct ctcp_segment_timer;
 typedef struct ctcp_segment_timer ctcp_segment_timer_t;
@@ -32,6 +46,7 @@ typedef struct ctcp_segment_timer ctcp_segment_timer_t;
  * if not all the segments are of the full MAX_SEG_DATA_SIZE in size.
  */
 #define MAX_SEG_DATA_SIZE 1440
+#define MAX_WINDOW 5
 
 /**
  * cTCP flags.
