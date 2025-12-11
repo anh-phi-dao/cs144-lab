@@ -198,8 +198,7 @@ ctcp_segment_t *create_segment(ctcp_state_t *state, ctcp_segment_t *current_segm
   {
     tcp_segment->flags |= ACK;
   }
-  tcp_segment->cksum = 0;
-  tcp_segment->cksum = cksum(tcp_segment, tcp_segment->len);
+
   return tcp_segment;
 }
 
@@ -220,8 +219,6 @@ ctcp_segment_t *create_FIN(ctcp_state_t *state)
   tcp_segment->window = MAX_SEG_DATA_SIZE;
   tcp_segment->ackno = 1;
   tcp_segment->seqno = state->nextseqno;
-  tcp_segment->cksum = 0;
-  tcp_segment->cksum = cksum(tcp_segment, tcp_segment->len);
   return tcp_segment;
 }
 
@@ -237,11 +234,14 @@ ctcp_segment_t *free_ctcp_segment_t(ctcp_segment_t *segment)
 
 void segment_host_to_network(ctcp_segment_t *segment)
 {
+  uint16_t len = segment->len;
   segment->ackno = htonl(segment->ackno);
   segment->seqno = htonl(segment->seqno);
   segment->len = htons(segment->len);
   segment->window = htons(segment->window);
   segment->flags = htonl(segment->flags);
+  segment->cksum = 0;
+  segment->cksum = cksum(segment, len);
 }
 
 void segment_network_to_host(ctcp_segment_t *segment)
@@ -484,6 +484,7 @@ void add_to_buffer_with_order(linked_list_t *buff, ctcp_segment_t *segment)
   ll_add_after(buff, track, segment);
 }
 
+/*They handle before change back to host*/
 int is_corrupt(ctcp_segment_t *segment)
 {
   uint16_t segment_cksum = segment->cksum;
@@ -521,8 +522,11 @@ void ctcp_read(ctcp_state_t *state)
         ctcp_segment_t *sent_seg = malloc(sent_segment->len);
         memcpy(sent_seg, sent_segment, sent_segment->len);
         segment_host_to_network(sent_seg);
-#ifdef DEBUG_SEGMENT
+#ifdef DEBUG_SENDER
         fprintf(stderr, "[INFO] Sender");
+#endif
+#ifdef DEBUG_SEGMENT
+
         print_hdr_ctcp(sent_seg);
 #endif
         conn_send(state->conn, sent_seg, seg_len);
@@ -550,34 +554,42 @@ void ctcp_read(ctcp_state_t *state)
 
 void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 {
-/* FIXME */
+  /* FIXME */
+
 #ifdef DEBUG_RECEIVE
   fprintf(stderr, "[INFO] Receiver");
 #endif
 #ifdef DEBUG_SEGMENT
-
   print_hdr_ctcp(segment);
 #endif
+  if (is_corrupt(segment) == 1)
+  {
+#ifdef DEBUG_CORRUPT
+    fprintf(stderr, "[INFO] Corrupted segment\n");
+#endif
+    free(segment);
+    return;
+  }
   segment_network_to_host(segment);
 #ifdef DEBUF_SEGMENT_LEN
   fprintf(stderr, "[INFO] Len = %lu and segment->len = %d\n", len, segment->len);
 #endif
-  if (len < sizeof(ctcp_segment_t))
-  {
-    free(segment);
-    return;
-  }
-  if (len < segment->len)
-  {
-    free(segment);
-    return;
-  }
-  uint16_t checksum = cksum(segment, segment->len);
-  if (checksum != 0xffff)
-  {
-    free(segment);
-    return;
-  }
+  // if (len < sizeof(ctcp_segment_t))
+  // {
+  //   free(segment);
+  //   return;
+  // }
+  // if (len < segment->len)
+  // {
+  //   free(segment);
+  //   return;
+  // }
+  // uint16_t checksum = cksum(segment, segment->len);
+  // if (checksum != 0xffff)
+  // {
+  //   free(segment);
+  //   return;
+  // }
   /*Receive FIN, output any remain segment, destroy connection*/
   if ((segment->flags & FIN) != 0)
   {
