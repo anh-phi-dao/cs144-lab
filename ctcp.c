@@ -89,6 +89,7 @@ static ctcp_state_t *state_list;
 /* FIXME: Feel free to add as many helper functions as needed. Don't repeat
           code! Helper functions make the code clearer and cleaner. */
 char buff[MAX_SEG_DATA_SIZE + 1];
+long track_time;
 
 ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg)
 {
@@ -305,7 +306,6 @@ void send_FIN(ctcp_state_t *state)
 #ifdef PRINT_FINAL_STATE
   print_state_number(state);
 #endif
-  state->FIN_Close++;
 }
 
 void update_send_base(ctcp_state_t *state)
@@ -527,6 +527,9 @@ void ctcp_read(ctcp_state_t *state)
       {
         /*send a FIN*/
         send_FIN(state);
+        state->FIN_Close = FIN_SENT_OR_RECEIVED;
+        track_time = current_time();
+        fprintf(stderr, "[INFO] Write an EOF,sending FIN and closing connection\n");
       }
     }
   } while (read_bytes > 0);
@@ -548,35 +551,40 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 #endif
   if (len < sizeof(ctcp_segment_t))
   {
-    goto escape;
+    free(segment);
     return;
   }
   if (len < segment->len)
   {
-    goto escape;
+    free(segment);
     return;
   }
   uint16_t checksum = cksum(segment, segment->len);
   if (checksum != 0xffff)
   {
-    goto escape;
+    free(segment);
     return;
   }
   /*Receive FIN, output any remain segment, destroy connection*/
   if ((segment->flags & FIN) != 0)
   {
     send_acknowledgement_of_received_packet(state, segment);
-    if (state->FIN_Close == DID_NOT_FIND_SEGMENT_IN_BUFFER)
+    if (state->FIN_Close == NORMAL_STATE)
     {
       send_FIN(state);
+      state->FIN_Close = FIN_SENT_OR_RECEIVED;
+      track_time = current_time();
+      fprintf(stderr, "[INFO] Received FIN, closing connection\n");
     }
+    free(segment);
+    return;
   }
   else if ((segment->flags & ACK) != 0)
   {
-    if (state->FIN_Close != DID_NOT_FIND_SEGMENT_IN_BUFFER)
+    if (state->FIN_Close == FIN_SENT_OR_RECEIVED)
     {
-      state->FIN_Close++;
-      goto escape;
+      free(segment);
+      return;
     }
     /*on sender side when receiving acknowledgement*/
     if (segment->len == sizeof(ctcp_segment_t))
@@ -629,11 +637,10 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
       }
     }
   }
-escape:
+
 #ifdef PRINT_FINAL_STATE
   print_state_number(state);
 #endif
-  free(segment);
 }
 
 void ctcp_output(ctcp_state_t *state)
@@ -694,13 +701,16 @@ void ctcp_timer()
     return;
   }
   /*when host send or recieve a FIN, destroy the connection*/
-  if (state_list->FIN_Close >= 2)
+  if (state_list->FIN_Close == FIN_SENT_OR_RECEIVED)
   {
+
+    if ((current_time() - track_time) > 5000)
+    {
 #ifdef DEBUG_FIN_SIGNAL
-    fprintf(stderr, "[INFO] Connection has been destroyed due to FIN signal\n");
+      fprintf(stderr, "[INFO] Connection has been destroyed due to FIN signal\n");
 #endif
-    sleep(1);
-    ctcp_destroy(state_list);
+      ctcp_destroy(state_list);
+    }
     return;
   }
 
