@@ -68,17 +68,17 @@ struct ctcp_state
                               this if this is the case for you */
 
   /* FIXME: Add other needed fields. */
-  // linked_list_t *timer;            /*store the timer value*/
   linked_list_t *receive_segments; /*Linked list of received segments*/
-  linked_list_t *timer;
-  ctcp_config_t *cfg; /*connection configuration (RT timeout,transmission time,receive window, send window)*/
-  uint32_t nextseqno;
-  uint32_t send_base;
-  uint32_t receive_base;
+  linked_list_t *timer;            /*Linked list of timers, each segment inside segments will have a corresponding timer*/
+  ctcp_config_t *cfg;              /*connection configuration (RT timeout,transmission time,receive window, send window)*/
+  long track_time;                 /*for tracking the time when connection change to FIN_SENT_OR_RECEIVED state*/
+  uint32_t nextseqno;              /*each time create a new segment, host will use this number, after having created the segment, this number
+                                    will be updated to create next segment*/
+  uint32_t send_base;              /*the base of sender window, this number will be updated when sender receive correct acknowledgement*/
+  uint32_t receive_base;           /*the base of receive window, this number will be updated when receiver has output the segment*/
   uint32_t num_of_received_failed_ack;
-  uint32_t num_of_retransmission; /* number of retransmission*/
-  uint8_t FIN_Close;
-  long track_time;
+  uint32_t num_of_retransmission; /* number of retransmission, if this number is larger than a thredhold, this mean this connection is not available*/
+  uint8_t FIN_Close;              /*state of connection, if host send FIN or receive FIN, then this state will change*/
 };
 
 /**
