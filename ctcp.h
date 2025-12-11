@@ -13,6 +13,7 @@
 #include "ctcp_sys.h"
 #include <stdarg.h>
 #include "ctcp_utils.h"
+#include "ctcp_linked_list.h"
 #include <unistd.h>
 
 #define DEBUG_CTCP 1
@@ -202,8 +203,88 @@ void ctcp_output(ctcp_state_t *state);
  * Note that this is called BEFORE ctcp_init() so state_list might be NULL.
  */
 void ctcp_timer();
-
+/**
+ * @brief find timer corresponding to sequence number of a segment
+ */
 ctcp_segment_timer_t *find_timer(ctcp_state_t *state, uint32_t seqno);
+/**
+ * @brief delete timer corresponding to sequence number of a segment
+ */
 void delete_timer(ctcp_state_t *state, uint32_t seqno);
-
+/**
+ * @brief clean all object in linked list
+ */
+void clean_all_object_int_linked_list(linked_list_t *segments);
+/**
+ * @brief create segment for TCP connection
+ * @param state: State of all connection
+ * @param current_segment: Pointer to received segment, if sender just want to send a packet, then this param is NULL
+ * @param buff: pointer to data packets
+ * @param with_ACK: =0 -> Normal packets, =1 -> receiver want to send acknowledgement back to sender
+ * @return a complete segment
+ */
+ctcp_segment_t *create_segment(ctcp_state_t *state, ctcp_segment_t *current_segment, const char *buff, size_t len, uint8_t with_ACK);
+/**
+ * @brief Create a timer for segment, necessary for retransmission of each segment in selective repeat
+ */
+ctcp_segment_timer_t *create_timer_for_segment(ctcp_segment_t *current_segment);
+/**
+ * @brief create FIN signal
+ * @return a complete segment
+ */
+ctcp_segment_t *create_FIN(ctcp_state_t *state);
+/**
+ * @brief delete a segment object
+ */
+ctcp_segment_t *free_ctcp_segment_t(ctcp_segment_t *segment);
+/**
+ * @brief change segment to network-byte-order because create_segment only create segment that is host-byte-order
+ * @note This function also calculate the checksum value
+ */
+void segment_host_to_network(ctcp_segment_t *segment);
+/**
+ * @brief change segment from network-byte-order to host-byte-order
+ * @note Use after recieve segemtn in ctcp_receive()
+ */
+void segment_network_to_host(ctcp_segment_t *segment);
+/**
+ * @brief Print the important number in state object
+ * @note Use for debugging
+ */
+void print_state_number(ctcp_state_t *state);
+/**
+ * @brief Send FIN signal
+ */
+void send_FIN(ctcp_state_t *state);
+/**
+ * @brief update state->send_base value and delete all acknowledged number before new send_base value
+ * @note It will reach to unacknowledge number with smallest sequence number
+ */
+void update_send_base(ctcp_state_t *state);
+/**
+ * @brief When receiver receive data packet, based on its sequence nmber and payload lenght , this functions send an acknowledgement back to sender
+ */
+void send_acknowledgement_of_received_packet(ctcp_state_t *state, ctcp_segment_t *segment);
+/**
+ * @brief find a segment inside the buffer
+ * @note Use in receiver to find acknowledged packet
+ */
+uint32_t find_segment_in_buffer(linked_list_t *buff, ctcp_segment_t *segment);
+/**
+ * @brief retransmitt any segment that still exist in buffer
+ */
+void retransmit_segments(ctcp_state_t *state);
+/**
+ * @brief add a segment in inside a buffer and make sure that their sequence numbers are in order
+ */
+void add_to_buffer_with_order(linked_list_t *buff, ctcp_segment_t *segment);
+/**
+ * @brief check if a recieved segment is truncated base on checksum value
+ */
+int is_corrupt(ctcp_segment_t *segment);
+/**
+ * @brief deal with each connection state
+ * @note This function is put in ctcp_timer() when it has to deal with multiple connection
+ */
+void deal_in_timer(ctcp_state_t *state);
 #endif /* CTCP_H */
