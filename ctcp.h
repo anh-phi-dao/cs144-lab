@@ -26,6 +26,8 @@
 #define DEBUG_FIN_SIGNAL
 // #define DEBUF_SEGMENT_LEN
 #define DEBUG_RETRANSMISSION
+#define DEBUG_CORRUPT
+// #define DEBUG_FIND_TIMER
 #endif
 
 struct ctcp_segment_timer;

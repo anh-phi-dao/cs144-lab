@@ -369,16 +369,24 @@ uint32_t find_segment_in_buffer(linked_list_t *buff, ctcp_segment_t *segment)
 ctcp_segment_timer_t *find_timer(ctcp_state_t *state, uint32_t seqno)
 {
   ll_node_t *track = state->timer->head;
+  ctcp_segment_timer_t *timer = NULL;
+#ifdef DEBUG_FIND_TIMER
+  fprintf(stderr, "[INFO] Begin finding timer\n");
+#endif
   while (track != NULL)
   {
-    ctcp_segment_timer_t *timer = (ctcp_segment_timer_t *)track->object;
-    if (timer->seqno == seqno)
+    timer = (ctcp_segment_timer_t *)track->object;
+    if (timer != NULL && timer->seqno == seqno)
     {
-      return timer;
+#ifdef DEBUG_FIND_TIMER
+      fprintf(stderr, "[INFO] Found timer with seqno =%d\n", timer->seqno);
+      fprintf(stderr, "[INFO] Timer with address =%p\n", timer);
+#endif
+      break;
     }
     track = track->next;
   }
-  return NULL;
+  return timer;
 }
 
 void delete_timer(ctcp_state_t *state, uint32_t seqno)
@@ -406,8 +414,8 @@ void retransmit_segments(ctcp_state_t *state)
     ctcp_segment_t *seg = (ctcp_segment_t *)track->object;
     if (seg->ackno == 1)
     {
-      ctcp_segment_timer_t *time = find_timer(state, seg->seqno);
-      if (time == NULL)
+      ctcp_segment_timer_t *time_track = find_timer(state, seg->seqno);
+      if (time_track == NULL)
       {
 #ifdef DEBUG_RETRANSMISSION
         fprintf(stderr, "Can not find timer for unacknowledge segment with seqno %d\n", seg->seqno);
@@ -415,17 +423,19 @@ void retransmit_segments(ctcp_state_t *state)
         track = track->next;
         continue;
       }
-      long delta_time = current_time() - time->current_time;
+
+      long delta_time = current_time() - time_track->current_time;
       if (delta_time < state->cfg->rt_timeout)
       {
-#ifdef DEBUG_RETRANSMISSION
-        fprintf(stderr, "Can not find timer for unacknowledge segment with seqno %d\n", seg->seqno);
-#endif
+
         track = track->next;
         continue;
       }
+#ifdef DEBUG_RETRANSMISSION
+      fprintf(stderr, "Retransmitting sequence with seqno %d\n", seg->seqno);
+#endif
       require_transmit = THERE_ARE_SEGMENT_REQUIRE_RETRANSMISSION;
-      time->current_time = current_time();
+      time_track->current_time = current_time();
       memset(buff, 0, sizeof(buff));
       uint32_t new_seqno = seg->seqno + (seg->len - sizeof(ctcp_segment_t));
       if (seg->seqno >= state->send_base && new_seqno <= (state->send_base + state->cfg->recv_window))
@@ -521,18 +531,21 @@ void ctcp_read(ctcp_state_t *state)
       }
     }
     /*When it detect an EOF, send a FIN and destroy connection*/
-    else if (read_bytes < 0)
+  } while (read_bytes > 0);
+  if (read_bytes < 0)
+  {
+    if (state != NULL)
     {
-      if (state != NULL)
+      /*send a FIN*/
+      if (state->FIN_Close == NORMAL_STATE)
       {
-        /*send a FIN*/
         send_FIN(state);
-        state->FIN_Close = FIN_SENT_OR_RECEIVED;
-        track_time = current_time();
         fprintf(stderr, "[INFO] Write an EOF,sending FIN and closing connection\n");
+        track_time = current_time();
+        state->FIN_Close = FIN_SENT_OR_RECEIVED;
       }
     }
-  } while (read_bytes > 0);
+  }
 }
 
 void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
