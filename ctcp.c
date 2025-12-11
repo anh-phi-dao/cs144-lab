@@ -574,23 +574,6 @@ void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len)
 #ifdef DEBUF_SEGMENT_LEN
   fprintf(stderr, "[INFO] Len = %lu and segment->len = %d\n", len, segment->len);
 #endif
-  // if (len < sizeof(ctcp_segment_t))
-  // {
-  //   free(segment);
-  //   return;
-  // }
-  // if (len < segment->len)
-  // {
-  //   free(segment);
-  //   return;
-  // }
-  // uint16_t checksum = cksum(segment, segment->len);
-  // if (checksum != 0xffff)
-  // {
-  //   free(segment);
-  //   return;
-  // }
-  /*Receive FIN, output any remain segment, destroy connection*/
   if ((segment->flags & FIN) != 0)
   {
     send_acknowledgement_of_received_packet(state, segment);
