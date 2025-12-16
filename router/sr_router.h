@@ -46,15 +46,20 @@
 #define PACKET_DUMP_SIZE 1024
 
 /*my preprocessor define*/
+#define IPV4_ADDR_LEN 4
+
 #define MY_DEBUG 1
 
 #if MY_DEBUG == 1
+/*#define DEBUG_MESSAGE*/
 /*#define DEBUG_INTERFACE*/
-#define DEBUG_ETHERNET
-#define DEBUG_ETHERTYPE
+/*#define DEBUG_ETHERNET*/
+/*#define DEBUG_ETHERTYPE*/
 #define DEBUG_ARP
+#define DEBUG_ARP_REPLY
+#define DEBUG_ARP_REQUEST
 #define DEBUG_IP
-#define DEBUG_ICMP
+/*#define DEBUG_ICMP*/
 /*#define DEBUG_ROUTING_TABLE*/
 #endif
 
@@ -84,6 +89,7 @@ struct sr_instance
   struct sockaddr_in sr_addr;  /* address to server */
   struct sr_if *if_list;       /* list of interfaces */
   struct sr_rt *routing_table; /* routing table */
+  struct sr_packet *packets;   /*store packet that need to be transmitted*/
   struct sr_arpcache cache;    /* ARP cache */
   pthread_attr_t attr;
   FILE *logfile;
@@ -108,13 +114,63 @@ void sr_set_ether_addr(struct sr_instance *, const unsigned char *);
 void sr_print_if_list(struct sr_instance *);
 
 /*my function*/
+/**
+ * @brief find the interface based on received target ip address of ARP message
+ * @return address of the interface data structure
+ * @note Do not delete the returned structure
+ */
 struct sr_if *compare_target_ip_address_with_current_interface_list(struct sr_instance *sr, sr_arp_hdr_t *received_request);
+/**
+ * @brief find the interface based on destination IP address inside and IP packet
+ * @return address of the interface data structure
+ * @note Do not delete the returned structure
+ */
 struct sr_if *compare_packet_destination_ip_with_current_interface_list(struct sr_instance *sr, sr_ip_hdr_t *IP_packet);
+/**
+ * @brief find the interface based on the interface name
+ * @return address of the interface data structure
+ * @note Do not delete the returned structure
+ */
+struct sr_if *find_interface_entry(struct sr_instance *sr, char *interface);
+/**
+ * @brief based on an ARP request to the router, create a ARP reply and sen back to sender host
+ */
 void construct_and_send_ARP_based_in_ether_frame(struct sr_instance *sr, uint8_t *packet);
+/**
+ * @brief Check correct checksum of IP packet
+ * @return CHECKSUM_ERROR=1 CHECKSUM_CORRECT=0
+ */
 int check_correct_IP_packet_checksum(sr_ip_hdr_t *IP_Packet);
+/**
+ * @brief Check correct checksum of ICMP packet
+ * @return CHECKSUM_ERROR=1 CHECKSUM_CORRECT=0
+ */
 int check_correct_ICMP_checksum(sr_icmp_hdr_t *ICMP_header);
+void compute_checksum_of_IP_Packet(sr_ip_hdr_t *IP_Packet);
+/** */
 uint8_t find_matched_bits(struct sr_rt *entry, sr_ip_hdr_t *received_packet);
+/**
+ * @brief check routing table that correponsding to destination address of an ip packet
+ * @return address of the interface data structure
+ * @note Do not delete the returned structure
+ */
 struct sr_rt *check_routing_table(struct sr_instance *sr, sr_ip_hdr_t *received_packet);
+/**
+ * @brief create and send ICMP net ureachable and send back to sender host
+ */
 void create_and_send_ICMP_net_unreachable_based_on_IP_packet(struct sr_instance *sr, uint8_t *packet, char *interface);
+/**
+ * @brief create and send ARP request to request queue, each 1 second ARP requests inside cache will be sent to corresponding host
+ */
+void create_ARP_request_and_send_to_ARP_cache_based_on_IP_packet(struct sr_instance *sr, uint8_t *packet, struct sr_rt *entry);
+void forwarding_the_packet_without_create_ARP_request(struct sr_instance *sr, uint8_t *packet, unsigned int len, struct sr_arpentry *cache, char *iface);
+/**
+ * @brief cache IP to MAC mapping to ARP table(ARP cache)
+ */
+void cache_IP_and_MAC_from_ARP_reply(struct sr_instance *sr, uint8_t *packet);
 
+/*function for ICMP_packet linkest list*/
+void add_packet_to_linkest_list(struct sr_instance *sr, uint8_t *packet, unsigned int len, char *iface);
+void delete_packet_out_of_linkest_list(struct sr_instance *sr, struct sr_packet *depacket);
+void delele_all_packet(struct sr_instance *sr);
 #endif /* SR_ROUTER_H */

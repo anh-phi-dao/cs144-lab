@@ -1,2 +1,3 @@
 *.o
 router/sr
+*.pcap

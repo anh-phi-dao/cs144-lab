@@ -46,6 +46,7 @@ void sr_init(struct sr_instance *sr)
   pthread_create(&thread, &(sr->attr), sr_arpcache_timeout, sr);
 
   /* Add initialization code here! */
+  sr_print_if_list(sr);
 
 } /* -- sr_init -- */
 
@@ -77,31 +78,61 @@ void sr_handlepacket(struct sr_instance *sr,
 
   printf("*** -> Received packet of length %d \n", len);
 
-  /* fill in code here */
+/* fill in code here */
+#ifdef DEBUG_MESSAGE
+  print_hdrs(packet, len);
+#endif
   sr_ethernet_hdr_t *ether_packet_header = (sr_ethernet_hdr_t *)packet;
+
 #ifdef DEBUG_ETHERNET
   print_hdr_eth((uint8_t *)ether_packet_header);
   printf("%s\n", interface);
 #endif
-  /*recevie an ARP packet*/
+  /*if recevie an ARP packet*/
   if (ntohs(ether_packet_header->ether_type) == ethertype_arp)
   {
     sr_arp_hdr_t *apr_packet = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+#ifdef DEBUG_ARP
+    print_hdr_arp((uint8_t *)apr_packet);
+#endif
+    /*if this packet is ARP reply*/
+    /*cache sender ip address and its corresponding MAC address to ARP table*/
     if (ntohs(apr_packet->ar_op) == arp_op_reply)
     {
+#ifdef DEBUG_ARP_REPLY
+      printf("Reply from other host\n");
+#endif
+
+      /*you should only cache the entry if the target IP address is one of your router's IP addresses*/
+      struct sr_if *entry_cache = sr_arpcache_lookup(&sr->cache, apr_packet->ar_sip);
+      if (entry_cache == NULL)
+      {
+        cache_IP_and_MAC_from_ARP_reply(sr, packet);
+      }
+      else
+      {
+        free(entry_cache);
+        entry_cache = NULL;
+      }
     }
+    /*if receive ARP request to router's IP addresses*/
+    /*send an ARP reply back to the sender host*/
     else if (ntohs(apr_packet->ar_op) == arp_op_request)
     {
+#ifdef DEBUG_ARP_REQUEST
+      printf("Receive request\n");
+#endif
       construct_and_send_ARP_based_in_ether_frame(sr, packet);
     }
   }
-  /*recevie an ip packet*/
+  /*if router receive an ip packet*/
   else if (ntohs(ether_packet_header->ether_type) == ethertype_ip)
   {
     sr_ip_hdr_t *ip_packet_hdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
 #ifdef DEBUG_IP
     print_hdr_ip((uint8_t *)ip_packet_hdr);
 #endif
+    /*checksum to make sure IP header is not corrupted*/
     if (check_correct_IP_packet_checksum(ip_packet_hdr) == CHECKSUM_ERROR)
     {
 #ifdef DEBUG_IP
@@ -109,16 +140,17 @@ void sr_handlepacket(struct sr_instance *sr,
 #endif
       return;
     }
+    /*decrease time to live, if time to live drop to 0, drop this packet*/
     ip_packet_hdr->ip_ttl--;
     if (ip_packet_hdr->ip_ttl == 0)
     {
       /*send ICMP ttl expired*/
       return;
     }
-
+    compute_checksum_of_IP_Packet(ip_packet_hdr);
+    /*check if the destination IP is one of router's IP addresses*/
     struct sr_if *current_interface = compare_packet_destination_ip_with_current_interface_list(sr, ip_packet_hdr);
     /*it is for me as router*/
-
     if (current_interface != NULL)
     {
       if (ip_packet_hdr->ip_p == ip_protocol_icmp)
@@ -133,22 +165,35 @@ void sr_handlepacket(struct sr_instance *sr,
         }
       }
     }
-    /*it is for other host*/
+    /*if it is for other host*/
     else
     {
+      /*check routing table with destination IP address*/
       struct sr_rt *matched_entry = check_routing_table(sr, ip_packet_hdr);
+      /*if there is a entry that match with destination IP*/
       if (matched_entry != NULL)
       {
         /*check ARP_cache*/
         struct sr_arpentry *arp_inside_cache = sr_arpcache_lookup(&sr->cache, ip_packet_hdr->ip_dst);
+        /*if IP->MAC mapping exist, forwarding the  packet based on IP->MAC mapping inside cache*/
         if (arp_inside_cache != NULL)
         {
-          sr_send_packet(sr, packet, len, arp_inside_cache->mac);
+#ifdef DEBUG_IP
+          printf("Forwarding imediately without creating ARP request\n");
+#endif
+          /*maybe it is wrong*/
+          forwarding_the_packet_without_create_ARP_request(sr, packet, len, arp_inside_cache, matched_entry->interface);
+          free(arp_inside_cache);
         }
         else
         {
+/*send ARP request to cache*/
+#ifdef DEBUG_ICMP
+          printf("Creating cache\n");
+#endif
+          create_ARP_request_and_send_to_ARP_cache_based_on_IP_packet(sr, packet, matched_entry);
+          add_packet_to_linkest_list(sr, packet, len, matched_entry->interface);
         }
-        free(arp_inside_cache);
       }
       else
       {
@@ -193,7 +238,7 @@ struct sr_if *find_interface_entry(struct sr_instance *sr, char *interface)
   struct sr_if *interface_list = sr->if_list;
   while (interface_list != NULL)
   {
-    if (memcmp(interface, interface_list->name, 32) == 0)
+    if (memcmp(interface, interface_list->name, sr_IFACE_NAMELEN) == 0)
     {
       return interface_list;
     }
@@ -266,6 +311,12 @@ int check_correct_ICMP_checksum(sr_icmp_hdr_t *ICMP_header)
   }
   ICMP_header->icmp_sum = header_checksum;
   return result;
+}
+
+void compute_checksum_of_IP_Packet(sr_ip_hdr_t *IP_Packet)
+{
+  IP_Packet->ip_sum = 0;
+  IP_Packet->ip_sum = cksum(IP_Packet, sizeof(sr_ip_hdr_t));
 }
 
 uint8_t find_matched_bits(struct sr_rt *entry, sr_ip_hdr_t *received_packet)
@@ -362,6 +413,141 @@ void create_and_send_ICMP_net_unreachable_based_on_IP_packet(struct sr_instance 
   send_packet = NULL;
 }
 
-void create_ARP_request_and_send_to_ARP_cache_based_on_IP_packet(struct sr_instance *sr)
+void create_ARP_request_and_send_to_ARP_cache_based_on_IP_packet(struct sr_instance *sr, uint8_t *packet, struct sr_rt *entry)
 {
+  unsigned short packet_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
+  uint8_t *send_packet = malloc(packet_len);
+  sr_ethernet_hdr_t *send_ether_hdr = (sr_ethernet_hdr_t *)(send_packet);
+  sr_arp_hdr_t *send_arp_hdr = (sr_arp_hdr_t *)(send_packet + sizeof(sr_ethernet_hdr_t));
+  sr_ip_hdr_t *receive_ip_hdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+
+  struct sr_if *matched_interface = find_interface_entry(sr, entry->interface);
+
+  if (matched_interface != NULL)
+  {
+    memcpy(send_ether_hdr->ether_shost, matched_interface->addr, ETHER_ADDR_LEN);
+    int i;
+    for (i = 0; i < ETHER_ADDR_LEN; i++)
+    {
+      send_ether_hdr->ether_dhost[i] = 0xff;
+    }
+    send_ether_hdr->ether_type = htons(ethertype_arp);
+    send_arp_hdr->ar_hrd = htons(arp_hrd_ethernet);
+    send_arp_hdr->ar_pro = htons(ethertype_ip);
+    send_arp_hdr->ar_hln = ETHER_ADDR_LEN;
+    send_arp_hdr->ar_pln = IPV4_ADDR_LEN;
+    send_arp_hdr->ar_op = htons(arp_op_request);
+    memcpy(send_arp_hdr->ar_sha, matched_interface->addr, ETHER_ADDR_LEN);
+    send_arp_hdr->ar_sip = matched_interface->ip;
+    for (i = 0; i < ETHER_ADDR_LEN; i++)
+    {
+      send_arp_hdr->ar_tha[i] = 0;
+    }
+    send_arp_hdr->ar_tip = receive_ip_hdr->ip_dst;
+#ifdef DEBUG_ARP
+    print_hdr_arp((uint8_t *)send_arp_hdr);
+#endif
+    sr_arpcache_queuereq(&sr->cache, receive_ip_hdr->ip_dst, send_packet, packet_len, matched_interface->name);
+  }
+
+  free(send_packet);
+  send_packet = NULL;
+}
+
+void forwarding_the_packet_without_create_ARP_request(struct sr_instance *sr, uint8_t *packet, unsigned int len, struct sr_arpentry *cache, char *iface)
+{
+  uint8_t *send_packet = malloc(len);
+  memset(send_packet, 0, sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t));
+  memcpy(send_packet, packet, len);
+  sr_ethernet_hdr_t *send_ether_hdr = (sr_ethernet_hdr_t *)(send_packet);
+  struct sr_if *corresponding_iface = find_interface_entry(sr, iface);
+  if (corresponding_iface != NULL)
+  {
+    memcpy(send_ether_hdr->ether_dhost, cache->mac, ETHER_ADDR_LEN);
+    memcpy(send_ether_hdr->ether_shost, corresponding_iface->addr, ETHER_ADDR_LEN);
+    sr_send_packet(sr, send_packet, len, iface);
+  }
+
+  free(send_packet);
+  send_packet = NULL;
+}
+
+void cache_IP_and_MAC_from_ARP_reply(struct sr_instance *sr, uint8_t *packet)
+{
+  sr_arp_hdr_t *receive_arp_hdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+  struct sr_if *router_interface = compare_target_ip_address_with_current_interface_list(sr, receive_arp_hdr);
+  if (router_interface != NULL)
+  {
+    sr_arpcache_insert(&sr->cache, receive_arp_hdr->ar_sha, receive_arp_hdr->ar_sip);
+  }
+}
+
+/*function for adding ICMP packet*/
+void add_packet_to_linkest_list(struct sr_instance *sr, uint8_t *packet, unsigned int len, char *iface)
+{
+  struct sr_packet *list = sr->packets;
+  while (list != NULL)
+  {
+    list = list->next;
+  }
+  list = malloc(sizeof(struct sr_packet));
+  list->buf = malloc(len);
+  memcpy(list->buf, packet, len);
+  list->len = len;
+  list->iface = malloc(sr_IFACE_NAMELEN * sizeof(char));
+  memcpy(list->iface, iface, sr_IFACE_NAMELEN);
+  list->next = NULL;
+  if (sr->packets == NULL)
+  {
+    sr->packets = list;
+  }
+}
+
+void delete_packet_out_of_linkest_list(struct sr_instance *sr, struct sr_packet *depacket)
+{
+  struct sr_packet *list = sr->packets;
+  struct sr_packet *next = NULL;
+  struct sr_packet *previous = NULL;
+  while (list != NULL)
+  {
+    if (list == depacket)
+    {
+      next = list->next;
+      break;
+    }
+    previous = list;
+    list = list->next;
+  }
+  free(list->buf);
+  list->buf = NULL;
+  free(list->iface);
+  list->iface = NULL;
+  free(list);
+  list = NULL;
+  if (previous != NULL)
+  {
+    previous->next = next;
+  }
+  else
+  {
+    sr->packets = NULL;
+  }
+}
+
+void delele_all_packet(struct sr_instance *sr)
+{
+  struct sr_packet *list = sr->packets;
+  struct sr_packet *temp;
+  while (list != NULL)
+  {
+    temp = list;
+    list = list->next;
+    free(temp->buf);
+    temp->buf = NULL;
+    free(temp->iface);
+    temp->iface = NULL;
+    free(temp);
+    temp = NULL;
+  }
+  sr->packets = NULL;
 }
