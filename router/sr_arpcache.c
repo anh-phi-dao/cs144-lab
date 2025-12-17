@@ -106,6 +106,10 @@ void send_packet_in_linkest_list_to_other_host(struct sr_instance *sr)
             packet_temp = packet_track;
             packet_track = packet_track->next;
             delete_packet_out_of_linkest_list(sr, packet_temp);
+#ifdef DEBUG_PACKET
+            printf("The remaining packet inside router\n");
+            print_all_packet_inside_linked_list(sr);
+#endif
             free(arp_inside_cache);
         }
         else

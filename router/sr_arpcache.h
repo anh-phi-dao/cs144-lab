@@ -158,6 +158,13 @@ int sr_arpcache_destroy(struct sr_arpcache *cache);
 void *sr_arpcache_timeout(void *cache_ptr);
 
 /*my function*/
+/**
+ * @brief send ARP requests inside request queue to corresponding interface
+ */
 int send_ARP_packet_to_other_host(struct sr_instance *sr, struct sr_arpreq *arp_requests);
+/**
+ * @brief send packets have not been tranmitted to corresponding interface. These message are stored in linkest
+ * list mostly due to router trying to send a packet without a ARP mapping inside cache
+ */
 void send_packet_in_linkest_list_to_other_host(struct sr_instance *sr);
 #endif

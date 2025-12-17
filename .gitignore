@@ -1,3 +1,6 @@
 *.o
 router/sr
 *.pcap
+*.txt
+*.html
+*.html.*
