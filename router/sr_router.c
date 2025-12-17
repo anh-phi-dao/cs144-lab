@@ -84,7 +84,6 @@ void sr_handlepacket(struct sr_instance *sr,
   print_hdrs(packet, len);
 #endif
   sr_ethernet_hdr_t *ether_packet_header = (sr_ethernet_hdr_t *)packet;
-
 #ifdef DEBUG_ETHERNET
   print_hdr_eth((uint8_t *)ether_packet_header);
   printf("%s\n", interface);
@@ -92,6 +91,9 @@ void sr_handlepacket(struct sr_instance *sr,
   /*if recevie an ARP packet*/
   if (ntohs(ether_packet_header->ether_type) == ethertype_arp)
   {
+#ifdef ETHER_TYPE
+    printf("Ehthernet frame is carrying ARP type\n");
+#endif
     sr_arp_hdr_t *apr_packet = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
 #ifdef DEBUG_ARP
     print_hdr_arp((uint8_t *)apr_packet);
@@ -129,6 +131,9 @@ void sr_handlepacket(struct sr_instance *sr,
   /*if router receive an ip packet*/
   else if (ntohs(ether_packet_header->ether_type) == ethertype_ip)
   {
+#ifdef ETHER_TYPE
+    printf("Ehthernet frame is carrying IP type\n");
+#endif
     sr_ip_hdr_t *ip_packet_hdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
 #ifdef DEBUG_IP
     print_hdr_ip((uint8_t *)ip_packet_hdr);
@@ -136,20 +141,33 @@ void sr_handlepacket(struct sr_instance *sr,
     /*checksum to make sure IP header is not corrupted*/
     if (check_correct_IP_packet_checksum(ip_packet_hdr) == CHECKSUM_ERROR)
     {
-#ifdef DEBUG_IP
-      printf("This IP packet has an error");
+#ifdef DEBUG_ERROR
+      printf("This IP packet has an error\n");
 #endif
       return;
     }
     /*decrease time to live, if time to live drop to 0, drop this packet*/
     ip_packet_hdr->ip_ttl--;
-    if (ip_packet_hdr->ip_ttl == 0)
+    if (ip_packet_hdr->ip_ttl < 1)
     {
-      /*send ICMP ttl expired*/
+/*send ICMP ttl expired*/
+#ifdef DEBUG_TTL
+      printf("Recieved expired packet\n");
+#endif
       create_and_send_ICMP(sr, packet, len, interface, TTL_EXPIRED);
       return;
     }
     compute_checksum_of_IP_Packet(ip_packet_hdr);
+#ifdef IP_TYPE
+    if (ip_packet_hdr->ip_p == ip_protocol_icmp)
+    {
+      printf("IP header is carrying ICMP protocol\n");
+    }
+    else
+    {
+      printf("IP header is carrying TCP/UDP protocol\n");
+    }
+#endif
     /*check if the destination IP is one of router's IP addresses*/
     struct sr_if *current_interface = compare_packet_destination_ip_with_current_interface_list(sr, ip_packet_hdr);
     /*it is for me as router*/
@@ -157,10 +175,11 @@ void sr_handlepacket(struct sr_instance *sr,
     {
       if (ip_packet_hdr->ip_p == ip_protocol_icmp)
       {
+
         sr_icmp_hdr_t *icmp_header = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
         if (check_correct_ICMP_checksum(icmp_header) == CHECKSUM_ERROR)
         {
-#ifdef DEBUG_ICMP
+#ifdef DEBUG_ERROR
           printf("There is error in ICMP packet\n");
 #endif
           return;
@@ -192,6 +211,12 @@ void sr_handlepacket(struct sr_instance *sr,
         {
 #ifdef DEBUG_IP
           printf("Forwarding imediately to %s without creating ARP request\n", matched_entry->interface);
+#endif
+#ifdef IP_TYPE
+          if (ip_packet_hdr->ip_p == ip_protocol_icmp)
+          {
+            print_hdrs(packet, len);
+          }
 #endif
           forwarding_the_packet_without_create_ARP_request(sr, packet, len, arp_inside_cache, matched_entry->interface);
           free(arp_inside_cache);
@@ -256,7 +281,7 @@ struct sr_if *find_interface_entry(struct sr_instance *sr, char *interface)
   struct sr_if *interface_list = sr->if_list;
   while (interface_list != NULL)
   {
-    if (memcmp(interface, interface_list->name, sr_IFACE_NAMELEN) == 0)
+    if (memcmp(interface, interface_list->name, strlen(interface_list->name)) == 0)
     {
       return interface_list;
     }
@@ -464,29 +489,51 @@ void forwarding_the_packet_without_create_ARP_request(struct sr_instance *sr, ui
 
 void create_and_send_ICMP(struct sr_instance *sr, uint8_t *packet, unsigned int len, char *interface, unsigned short types)
 {
-  uint8_t *send_packet = malloc(len);
-  memset(send_packet, 0, len);
-  memcpy(send_packet, packet, len);
 
   sr_ethernet_hdr_t *receive_ether_hdr = (sr_ethernet_hdr_t *)(packet);
-  sr_ethernet_hdr_t *send_ether_hdr = (sr_ethernet_hdr_t *)(send_packet);
   sr_ip_hdr_t *receive_ip_hdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+  uint8_t *received_data = packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t);
+  unsigned int recv_len = len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+
+  uint16_t packet_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) * 2 + sizeof(sr_icmp_hdr_t) + 4 + recv_len;
+  uint8_t *send_packet = malloc(packet_len);
+
+  sr_ethernet_hdr_t *send_ether_hdr = (sr_ethernet_hdr_t *)(send_packet);
   sr_ip_hdr_t *send_ip_hdr = (sr_ip_hdr_t *)(send_packet + sizeof(sr_ethernet_hdr_t));
   sr_icmp_hdr_t *send_icmp_hdr = (sr_icmp_hdr_t *)(send_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+  sr_ip_hdr_t *send_ip_hdr_2 = (sr_ip_hdr_t *)(send_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t) + 4);
+  uint8_t *the_rest_of_packet = send_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) * 2 + sizeof(sr_icmp_hdr_t) + 4;
 
   struct sr_if *send_interface = find_interface_entry(sr, interface);
   if (send_interface != NULL)
   {
     memcpy(send_ether_hdr->ether_dhost, receive_ether_hdr->ether_shost, ETHER_ADDR_LEN);
     memcpy(send_ether_hdr->ether_shost, send_interface->addr, ETHER_ADDR_LEN);
-    send_ip_hdr->ip_src = receive_ip_hdr->ip_dst;
+    send_ether_hdr->ether_type = htons(ethertype_ip);
+    memcpy(send_ip_hdr, receive_ip_hdr, sizeof(sr_ip_hdr_t));
+    send_ip_hdr->ip_len = htons(sizeof(sr_ip_hdr_t) * 2 + sizeof(sr_icmp_hdr_t) + 4 + recv_len);
+    send_ip_hdr->ip_src = send_interface->ip;
     send_ip_hdr->ip_dst = receive_ip_hdr->ip_src;
+    send_ip_hdr->ip_ttl = INIT_TTL;
+    send_ip_hdr->ip_p = ip_protocol_icmp;
     compute_checksum_of_IP_Packet(send_ip_hdr);
     send_icmp_hdr->icmp_code = (uint8_t)(types & 0xff);
     send_icmp_hdr->icmp_type = (uint8_t)(types >> 8);
     compute_checksum_of_ICMP_Packet(send_icmp_hdr);
-    sr_send_packet(sr, send_packet, len, send_interface->name);
+    memcpy(send_ip_hdr_2, receive_ip_hdr, sizeof(sr_ip_hdr_t));
+    memcpy(the_rest_of_packet, received_data, recv_len);
+#ifdef DEBUG_ICMP
+    printf("Sending ICMP\n");
+    print_hdrs(send_packet, packet_len);
+#endif
+    sr_send_packet(sr, send_packet, packet_len, send_interface->name);
   }
+#ifdef DEBUG_ERROR
+  else
+  {
+    printf("Can not find interface for %s\n", interface);
+  }
+#endif
   free(send_packet);
   send_packet = NULL;
 }

@@ -48,20 +48,24 @@
 /*my preprocessor define*/
 #define IPV4_ADDR_LEN 4
 
-#define MY_DEBUG 1
+#define MY_DEBUG 0
 
 #if MY_DEBUG == 0
-#define DEBUG_MESSAGE
+/*#define DEBUG_MESSAGE*/
+#define ETHER_TYPE
+#define IP_TYPE
+#define DEBUG_TTL
 /*#define DEBUG_INTERFACE*/
 /*#define DEBUG_ETHERNET*/
 /*#define DEBUG_ETHERTYPE*/
 /*#define DEBUG_ARP*/
-#define DEBUG_ARP_REPLY
-#define DEBUG_ARP_REQUEST
-#define DEBUG_IP
-/*#define DEBUG_ICMP*/
+/*#define DEBUG_ARP_REPLY*/
+/*#define DEBUG_ARP_REQUEST*/
+/*#define DEBUG_IP*/
+#define DEBUG_ICMP
 /*#define DEBUG_ROUTING_TABLE*/
-#define DEBUG_PACKET
+/*#define DEBUG_PACKET*/
+/*#define DEBUG_ERROR*/
 #endif
 
 #define CHECKSUM_ERROR 1
