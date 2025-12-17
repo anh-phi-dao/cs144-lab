@@ -4,3 +4,5 @@ router/sr
 *.txt
 *.html
 *.html.*
+*.d
+pox/

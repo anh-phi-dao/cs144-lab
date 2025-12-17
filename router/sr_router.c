@@ -362,10 +362,30 @@ void compute_checksum_of_IP_Packet(sr_ip_hdr_t *IP_Packet)
   IP_Packet->ip_sum = cksum(IP_Packet, sizeof(sr_ip_hdr_t));
 }
 
-void compute_checksum_of_ICMP_Packet(sr_icmp_hdr_t *ICMP_Packet)
+void compute_checksum_of_ICMP_Packet(sr_icmp_hdr_t *ICMP_Packet, uint8_t *datagram, unsigned int len)
 {
   ICMP_Packet->icmp_sum = 0;
-  ICMP_Packet->icmp_sum = cksum(ICMP_Packet, sizeof(sr_icmp_hdr_t));
+  uint8_t *data_for_checksum = malloc(len + sizeof(sr_icmp_hdr_t));
+  memset(data_for_checksum, 0, len + sizeof(sr_icmp_hdr_t));
+  memcpy(data_for_checksum, ICMP_Packet, sizeof(sr_icmp_hdr_t));
+  if (datagram != NULL)
+  {
+    memcpy(data_for_checksum + sizeof(sr_icmp_hdr_t), datagram, len);
+  }
+
+#ifdef DEBUG_ERROR
+  printf("Data for ICMP checksum\n");
+  print_hdr_icmp(data_for_checksum);
+  int i;
+  for (i = 0; i < len + sizeof(sr_icmp_hdr_t); i++)
+  {
+    printf("%x", data_for_checksum[i]);
+  }
+  printf("\n");
+#endif
+  ICMP_Packet->icmp_sum = cksum(data_for_checksum, len + sizeof(sr_icmp_hdr_t));
+  free(data_for_checksum);
+  data_for_checksum = NULL;
 }
 
 uint8_t find_matched_bits(struct sr_rt *entry, sr_ip_hdr_t *received_packet)
@@ -495,14 +515,15 @@ void create_and_send_ICMP(struct sr_instance *sr, uint8_t *packet, unsigned int 
   uint8_t *received_data = packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t);
   unsigned int recv_len = len - (sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
 
-  uint16_t packet_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) * 2 + sizeof(sr_icmp_hdr_t) + 4 + recv_len;
+  uint16_t packet_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) * 2 + sizeof(sr_icmp_hdr_t) + UNUSED_SIZE_OF_ICMP + recv_len;
   uint8_t *send_packet = malloc(packet_len);
 
   sr_ethernet_hdr_t *send_ether_hdr = (sr_ethernet_hdr_t *)(send_packet);
   sr_ip_hdr_t *send_ip_hdr = (sr_ip_hdr_t *)(send_packet + sizeof(sr_ethernet_hdr_t));
   sr_icmp_hdr_t *send_icmp_hdr = (sr_icmp_hdr_t *)(send_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
-  sr_ip_hdr_t *send_ip_hdr_2 = (sr_ip_hdr_t *)(send_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t) + 4);
-  uint8_t *the_rest_of_packet = send_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) * 2 + sizeof(sr_icmp_hdr_t) + 4;
+  uint8_t *unused_part = send_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t);
+  sr_ip_hdr_t *send_ip_hdr_2 = (sr_ip_hdr_t *)(send_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t) + UNUSED_SIZE_OF_ICMP);
+  uint8_t *the_rest_of_packet = send_packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) * 2 + sizeof(sr_icmp_hdr_t) + UNUSED_SIZE_OF_ICMP;
 
   struct sr_if *send_interface = find_interface_entry(sr, interface);
   if (send_interface != NULL)
@@ -511,7 +532,7 @@ void create_and_send_ICMP(struct sr_instance *sr, uint8_t *packet, unsigned int 
     memcpy(send_ether_hdr->ether_shost, send_interface->addr, ETHER_ADDR_LEN);
     send_ether_hdr->ether_type = htons(ethertype_ip);
     memcpy(send_ip_hdr, receive_ip_hdr, sizeof(sr_ip_hdr_t));
-    send_ip_hdr->ip_len = htons(sizeof(sr_ip_hdr_t) * 2 + sizeof(sr_icmp_hdr_t) + 4 + recv_len);
+    send_ip_hdr->ip_len = htons(sizeof(sr_ip_hdr_t) * 2 + sizeof(sr_icmp_hdr_t) + UNUSED_SIZE_OF_ICMP + recv_len);
     send_ip_hdr->ip_src = send_interface->ip;
     send_ip_hdr->ip_dst = receive_ip_hdr->ip_src;
     send_ip_hdr->ip_ttl = INIT_TTL;
@@ -519,12 +540,20 @@ void create_and_send_ICMP(struct sr_instance *sr, uint8_t *packet, unsigned int 
     compute_checksum_of_IP_Packet(send_ip_hdr);
     send_icmp_hdr->icmp_code = (uint8_t)(types & 0xff);
     send_icmp_hdr->icmp_type = (uint8_t)(types >> 8);
-    compute_checksum_of_ICMP_Packet(send_icmp_hdr);
+    memset(unused_part, 0xff, UNUSED_SIZE_OF_ICMP);
     memcpy(send_ip_hdr_2, receive_ip_hdr, sizeof(sr_ip_hdr_t));
     memcpy(the_rest_of_packet, received_data, recv_len);
+    compute_checksum_of_ICMP_Packet(send_icmp_hdr, unused_part, UNUSED_SIZE_OF_ICMP + sizeof(sr_ip_hdr_t) + recv_len);
+
 #ifdef DEBUG_ICMP
     printf("Sending ICMP\n");
     print_hdrs(send_packet, packet_len);
+    int i;
+    for (i = 0; i < packet_len; i++)
+    {
+      printf("%x", send_packet[i]);
+    }
+    printf("\n");
 #endif
     sr_send_packet(sr, send_packet, packet_len, send_interface->name);
   }

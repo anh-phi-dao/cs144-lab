@@ -65,7 +65,7 @@
 #define DEBUG_ICMP
 /*#define DEBUG_ROUTING_TABLE*/
 /*#define DEBUG_PACKET*/
-/*#define DEBUG_ERROR*/
+#define DEBUG_ERROR
 #endif
 
 #define CHECKSUM_ERROR 1
@@ -87,6 +87,8 @@
 #define TTL_EXPIRED UINT16_C(11 << 8 | 0)
 #define IP_HEADER_BAD UINT16_C(12 << 8 | 0)
 /*-------------*/
+
+#define UNUSED_SIZE_OF_ICMP 4
 
 #define GET_ICMP_TYPE(type, code) UINT16_C(type << 8 | code)
 
@@ -169,7 +171,7 @@ int check_correct_IP_packet_checksum(sr_ip_hdr_t *IP_Packet);
  */
 int check_correct_ICMP_checksum(sr_icmp_hdr_t *ICMP_header);
 void compute_checksum_of_IP_Packet(sr_ip_hdr_t *IP_Packet);
-void compute_checksum_of_ICMP_Packet(sr_icmp_hdr_t *ICMP_Packet);
+void compute_checksum_of_ICMP_Packet(sr_icmp_hdr_t *ICMP_Packet, uint8_t *datagram, unsigned int len);
 /** */
 uint8_t find_matched_bits(struct sr_rt *entry, sr_ip_hdr_t *received_packet);
 /**
