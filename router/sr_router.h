@@ -48,7 +48,7 @@
 /*my preprocessor define*/
 #define IPV4_ADDR_LEN 4
 
-#define MY_DEBUG 0
+#define MY_DEBUG 1
 
 #if MY_DEBUG == 0
 /*#define DEBUG_MESSAGE*/
@@ -89,6 +89,8 @@
 /*-------------*/
 
 #define UNUSED_SIZE_OF_ICMP 4
+#define ICMP_ECHO_REPLY_IDENTIFIER_SIZE 16
+#define ICMP_ECHO_REPLY_SEQUENCE_NUMBER_SIZE 16
 
 #define GET_ICMP_TYPE(type, code) UINT16_C(type << 8 | code)
 
@@ -139,23 +141,12 @@ void sr_print_if_list(struct sr_instance *);
 
 /*my function*/
 /**
- * @brief find the interface based on received target ip address of ARP message
- * @return address of the interface data structure
- * @note Do not delete the returned structure
- */
-struct sr_if *compare_target_ip_address_with_current_interface_list(struct sr_instance *sr, sr_arp_hdr_t *received_request);
-/**
- * @brief find the interface based on destination IP address inside and IP packet
- * @return address of the interface data structure
- * @note Do not delete the returned structure
- */
-struct sr_if *compare_packet_destination_ip_with_current_interface_list(struct sr_instance *sr, sr_ip_hdr_t *IP_packet);
-/**
  * @brief find the interface based on the interface name
  * @return address of the interface data structure
  * @note Do not delete the returned structure
  */
 struct sr_if *find_interface_entry(struct sr_instance *sr, char *interface);
+struct sr_if *find_interface_entry_based_on_ip(struct sr_instance *sr, uint32_t ip);
 /**
  * @brief based on an ARP request to the router, create a ARP reply and sen back to sender host
  */
@@ -185,8 +176,28 @@ struct sr_rt *check_routing_table(struct sr_instance *sr, sr_ip_hdr_t *received_
  * @brief create and send ARP request to request queue, each 1 second ARP requests inside cache will be sent to corresponding host
  */
 void create_ARP_request_and_send_to_ARP_cache_based_on_IP_packet(struct sr_instance *sr, uint8_t *packet, struct sr_rt *entry);
+/**
+ * @brief when ARP map has existed, forwarding the packet to host, using coresponding cache
+ */
 void forwarding_the_packet_without_create_ARP_request(struct sr_instance *sr, uint8_t *packet, unsigned int len, struct sr_arpentry *cache, char *iface);
+/**
+ * @brief create and send ICMP to host following types
+ * @note Only use for ICMP packets that has the following format
+ *    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |     Type      |     Code      |          Checksum             |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |                             unused                            |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |      Internet Header + 64 bits of Original Data Datagram      |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ */
 void create_and_send_ICMP(struct sr_instance *sr, uint8_t *packet, unsigned int len, char *interface, unsigned short types);
+/**
+ * @brief create and send ICMP echo reply to host following types
+ * @note Becaues ECHO_REPLY ICMP has different format
+ */
+void create_and_send_ICMP_echo_reply(struct sr_instance *sr, uint8_t *packet, unsigned int len, char *interface);
 /**
  * @brief cache IP to MAC mapping to ARP table(ARP cache)
  */

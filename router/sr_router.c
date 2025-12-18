@@ -169,7 +169,7 @@ void sr_handlepacket(struct sr_instance *sr,
     }
 #endif
     /*check if the destination IP is one of router's IP addresses*/
-    struct sr_if *current_interface = compare_packet_destination_ip_with_current_interface_list(sr, ip_packet_hdr);
+    struct sr_if *current_interface = find_interface_entry_based_on_ip(sr, ip_packet_hdr->ip_dst);
     /*it is for me as router*/
     if (current_interface != NULL)
     {
@@ -187,9 +187,9 @@ void sr_handlepacket(struct sr_instance *sr,
           return;
         }
         /*if the packet is ICMP echo request, send back an echo reply*/
-        if (GET_ICMP_TYPE(icmp_header->icmp_type, icmp_header->icmp_code) == ECHO_REQUEST)
+        if ((GET_ICMP_TYPE(icmp_header->icmp_type, icmp_header->icmp_code)) == (ECHO_REQUEST))
         {
-          create_and_send_ICMP(sr, packet, len, interface, ECHO_REPLY);
+          create_and_send_ICMP_echo_reply(sr, packet, len, interface);
         }
       }
       /*if the packet is a normal TCP/UDP, send ICMP port unreachable*/
@@ -250,33 +250,6 @@ void sr_handlepacket(struct sr_instance *sr,
 } /* end sr_ForwardPacket */
 
 /*my function*/
-struct sr_if *compare_target_ip_address_with_current_interface_list(struct sr_instance *sr, sr_arp_hdr_t *received_request)
-{
-  struct sr_if *interface_list = sr->if_list;
-  while (interface_list != NULL)
-  {
-    if (ntohl(interface_list->ip) == ntohl(received_request->ar_tip))
-    {
-      return interface_list;
-    }
-    interface_list = interface_list->next;
-  }
-  return NULL;
-}
-
-struct sr_if *compare_packet_destination_ip_with_current_interface_list(struct sr_instance *sr, sr_ip_hdr_t *IP_packet)
-{
-  struct sr_if *interface_list = sr->if_list;
-  while (interface_list != NULL)
-  {
-    if (ntohl(interface_list->ip) == ntohl(IP_packet->ip_dst))
-    {
-      return interface_list;
-    }
-    interface_list = interface_list->next;
-  }
-  return NULL;
-}
 
 struct sr_if *find_interface_entry(struct sr_instance *sr, char *interface)
 {
@@ -284,6 +257,20 @@ struct sr_if *find_interface_entry(struct sr_instance *sr, char *interface)
   while (interface_list != NULL)
   {
     if (memcmp(interface, interface_list->name, strlen(interface_list->name)) == 0)
+    {
+      return interface_list;
+    }
+    interface_list = interface_list->next;
+  }
+  return NULL;
+}
+
+struct sr_if *find_interface_entry_based_on_ip(struct sr_instance *sr, uint32_t ip)
+{
+  struct sr_if *interface_list = sr->if_list;
+  while (interface_list != NULL)
+  {
+    if (ip == interface_list->ip)
     {
       return interface_list;
     }
@@ -303,7 +290,7 @@ void construct_and_send_ARP_reply_based_in_ether_frame(struct sr_instance *sr, u
 
   send_ether_hdr->ether_type = htons(ethertype_arp);
 
-  struct sr_if *interface = compare_target_ip_address_with_current_interface_list(sr, receive_arp_hdr);
+  struct sr_if *interface = find_interface_entry_based_on_ip(sr, receive_arp_hdr->ar_tip);
   if (interface != NULL)
   {
     memcpy(send_ether_hdr->ether_shost, interface->addr, ETHER_ADDR_LEN);
@@ -543,8 +530,8 @@ void create_and_send_ICMP(struct sr_instance *sr, uint8_t *packet, unsigned int 
     memcpy(send_ether_hdr->ether_shost, send_interface->addr, ETHER_ADDR_LEN);
     send_ether_hdr->ether_type = htons(ethertype_ip);
     memcpy(send_ip_hdr, receive_ip_hdr, sizeof(sr_ip_hdr_t));
-    send_ip_hdr->ip_len = htons(sizeof(sr_ip_hdr_t) * 2 + sizeof(sr_icmp_hdr_t) + UNUSED_SIZE_OF_ICMP + recv_len);
     send_ip_hdr->ip_src = send_interface->ip;
+    send_ip_hdr->ip_len = htons(sizeof(sr_ip_hdr_t) * 2 + sizeof(sr_icmp_hdr_t) + UNUSED_SIZE_OF_ICMP + recv_len);
     send_ip_hdr->ip_dst = receive_ip_hdr->ip_src;
     send_ip_hdr->ip_ttl = INIT_TTL;
     send_ip_hdr->ip_p = ip_protocol_icmp;
@@ -578,10 +565,47 @@ void create_and_send_ICMP(struct sr_instance *sr, uint8_t *packet, unsigned int 
   send_packet = NULL;
 }
 
+void create_and_send_ICMP_echo_reply(struct sr_instance *sr, uint8_t *packet, unsigned int len, char *interface)
+{
+  sr_ethernet_hdr_t *receive_ether_hdr = (sr_ethernet_hdr_t *)(packet);
+  sr_ip_hdr_t *receive_ip_hdr = (sr_ip_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
+  uint8_t *received_data = ((uint8_t *)receive_ip_hdr) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t);
+  unsigned int recv_len = len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t) - sizeof(sr_icmp_hdr_t);
+  uint16_t packet_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t) + recv_len;
+  uint8_t *send_packet = malloc(packet_len);
+
+  sr_ethernet_hdr_t *send_ether_hdr = (sr_ethernet_hdr_t *)(send_packet);
+  sr_ip_hdr_t *send_ip_hdr = (sr_ip_hdr_t *)(((uint8_t *)send_ether_hdr) + sizeof(sr_ethernet_hdr_t));
+  sr_icmp_hdr_t *send_icmp_hdr = (sr_icmp_hdr_t *)(((uint8_t *)send_ip_hdr) + sizeof(sr_ip_hdr_t));
+  uint8_t *send_data = ((uint8_t *)send_icmp_hdr) + sizeof(sr_icmp_hdr_t);
+  struct sr_if *send_interface = find_interface_entry(sr, interface);
+  struct sr_if *from_interface = find_interface_entry_based_on_ip(sr, receive_ip_hdr->ip_dst);
+  if (send_interface != NULL && from_interface != NULL)
+  {
+    memcpy(send_ether_hdr->ether_dhost, receive_ether_hdr->ether_shost, ETHER_ADDR_LEN);
+    memcpy(send_ether_hdr->ether_shost, send_interface->addr, ETHER_ADDR_LEN);
+    send_ether_hdr->ether_type = htons(ethertype_ip);
+    memcpy(send_ip_hdr, receive_ip_hdr, sizeof(sr_ip_hdr_t));
+    send_ip_hdr->ip_src = from_interface->ip;
+    send_ip_hdr->ip_len = htons(sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t) + recv_len);
+    send_ip_hdr->ip_dst = receive_ip_hdr->ip_src;
+    send_ip_hdr->ip_ttl = INIT_TTL;
+    send_ip_hdr->ip_p = ip_protocol_icmp;
+    compute_checksum_of_IP_Packet(send_ip_hdr);
+    send_icmp_hdr->icmp_code = 0;
+    send_icmp_hdr->icmp_type = 0;
+    memcpy(send_data, received_data, recv_len);
+    compute_checksum_of_ICMP_Packet(send_icmp_hdr, send_data, recv_len);
+    sr_send_packet(sr, send_packet, packet_len, send_interface->name);
+  }
+  free(send_packet);
+  send_packet = NULL;
+}
+
 void cache_IP_and_MAC_from_ARP_reply(struct sr_instance *sr, uint8_t *packet)
 {
   sr_arp_hdr_t *receive_arp_hdr = (sr_arp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t));
-  struct sr_if *router_interface = compare_target_ip_address_with_current_interface_list(sr, receive_arp_hdr);
+  struct sr_if *router_interface = find_interface_entry_based_on_ip(sr, receive_arp_hdr->ar_tip);
   if (router_interface != NULL)
   {
     sr_arpcache_insert(&sr->cache, receive_arp_hdr->ar_sha, receive_arp_hdr->ar_sip);
