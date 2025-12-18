@@ -169,7 +169,7 @@ int check_correct_IP_packet_checksum(sr_ip_hdr_t *IP_Packet);
  * @brief Check correct checksum of ICMP packet
  * @return CHECKSUM_ERROR=1 CHECKSUM_CORRECT=0
  */
-int check_correct_ICMP_checksum(sr_icmp_hdr_t *ICMP_header);
+int check_correct_ICMP_checksum(sr_icmp_hdr_t *ICMP_header, uint8_t *datagram, unsigned int len);
 void compute_checksum_of_IP_Packet(sr_ip_hdr_t *IP_Packet);
 void compute_checksum_of_ICMP_Packet(sr_icmp_hdr_t *ICMP_Packet, uint8_t *datagram, unsigned int len);
 /** */

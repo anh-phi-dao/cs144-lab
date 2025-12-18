@@ -1,8 +1,10 @@
 *.o
 router/sr
+router/*.pcap
 *.pcap
 *.txt
 *.html
 *.html.*
 *.d
+router/*.d
 pox/

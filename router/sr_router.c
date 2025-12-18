@@ -177,7 +177,9 @@ void sr_handlepacket(struct sr_instance *sr,
       {
 
         sr_icmp_hdr_t *icmp_header = (sr_icmp_hdr_t *)(packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
-        if (check_correct_ICMP_checksum(icmp_header) == CHECKSUM_ERROR)
+        uint8_t *rest_of_packet = ((uint8_t *)icmp_header) + sizeof(sr_icmp_hdr_t);
+        unsigned int rest_of_packet_len = len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t) - sizeof(sr_icmp_hdr_t);
+        if (check_correct_ICMP_checksum(icmp_header, rest_of_packet, rest_of_packet_len) == CHECKSUM_ERROR)
         {
 #ifdef DEBUG_ERROR
           printf("There is error in ICMP packet\n");
@@ -339,12 +341,19 @@ int check_correct_IP_packet_checksum(sr_ip_hdr_t *IP_Packet)
   return result;
 }
 
-int check_correct_ICMP_checksum(sr_icmp_hdr_t *ICMP_header)
+int check_correct_ICMP_checksum(sr_icmp_hdr_t *ICMP_header, uint8_t *datagram, unsigned int len)
 {
   uint16_t header_checksum = ICMP_header->icmp_sum;
   ICMP_header->icmp_sum = 0;
   int result;
-  if (cksum(ICMP_header, sizeof(sr_icmp_hdr_t)) != header_checksum)
+  uint8_t *data_for_checksum = malloc(len + sizeof(sr_icmp_hdr_t));
+  memset(data_for_checksum, 0, len + sizeof(sr_icmp_hdr_t));
+  memcpy(data_for_checksum, ICMP_header, sizeof(sr_icmp_hdr_t));
+  if (datagram != NULL)
+  {
+    memcpy(data_for_checksum + sizeof(sr_icmp_hdr_t), datagram, len);
+  }
+  if (cksum(data_for_checksum, sizeof(sr_icmp_hdr_t) + len) != header_checksum)
   {
     result = CHECKSUM_ERROR;
   }
@@ -353,6 +362,8 @@ int check_correct_ICMP_checksum(sr_icmp_hdr_t *ICMP_header)
     result = CHECKSUM_CORRECT;
   }
   ICMP_header->icmp_sum = header_checksum;
+  free(data_for_checksum);
+  data_for_checksum = NULL;
   return result;
 }
 
