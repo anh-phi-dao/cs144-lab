@@ -790,10 +790,12 @@ void ctcp_timer()
   /* FIXME */
   /* FIXME */
   ctcp_state_t *state = state_list;
+  ctcp_state_t *temp_state;
   while (state != NULL)
   {
     /* code */
-    deal_in_timer(state);
+    temp_state = state;
     state = state->next;
+    deal_in_timer(temp_state);
   }
 }
